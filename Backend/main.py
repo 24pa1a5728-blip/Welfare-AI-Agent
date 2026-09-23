@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from pydantic import BaseModel
 
+
 from ocr_verification import (
     router as ocr_router,
     ensure_verification_table
@@ -13,11 +14,14 @@ from ocr_verification import (
 
 BASE_DIR = Path(__file__).resolve().parent
 
+from ocr_verification import router as ocr_router, ensure_verification_table
+
 
 app = FastAPI(
     title="Welfare Scheme AI Agent",
     description="Backend API for welfare scheme discovery, eligibility matching, and application management.",
     version="1.0.0"
+
 )
 
 
@@ -542,7 +546,62 @@ def check_profile_eligibility(
                 "Land ownership was acquired after 01-02-2019 and was not "
                 "acquired through succession due to death of the landholder"
             )
+     # ------------------------------------------
+    # PM-JAY Two-Route Logic
+    # ------------------------------------------
 
+    pmjay_route_a_indicator = False
+    # ------------------------------------------
+    # PM-JAY Two-Route Logic
+    # ------------------------------------------
+
+    if scheme_id == "PMJAY":
+
+        # --------------------------------------
+        # Route 1: Age 70+
+        # --------------------------------------
+
+        if profile.age >= 70:
+
+            has_aadhaar = get_scheme_answer(
+                profile_id,
+                "PMJAY",
+                "has_aadhaar"
+            )
+
+            if str(has_aadhaar).lower() != "true":
+
+                connection.close()
+
+                return False, [
+                    "Aadhaar-based e-KYC is mandatory for enrolment in the "
+                    "PM-JAY 70+ senior-citizen route."
+                ], []
+
+            connection.close()
+
+            return True, None, [
+                "Potentially eligible through the PM-JAY 70+ senior-citizen "
+                "route. Final enrolment requires Aadhaar-based e-KYC."
+            ]
+
+        # --------------------------------------
+        # Route 2: Below 70
+        # --------------------------------------
+
+        connection.close()
+
+        return False, [
+            "PM-JAY eligibility for applicants below 70 requires verification "
+            "against the official PM-JAY beneficiary database / applicable "
+            "State beneficiary database. Self-reported profile information "
+            "cannot establish final eligibility."
+        ], []
+
+
+
+
+    
     # ------------------------------------------
     # Check Every Eligibility Rule
     # ------------------------------------------
@@ -567,6 +626,15 @@ def check_profile_eligibility(
             actual_value = getattr(profile, field)
         else:
             actual_value = None
+                    # PM-KISAN exception:
+        # MTS / Class IV / Group D government employees are NOT excluded.
+        if (
+            scheme_id == "PMKISAN"
+            and field == "government_employee"
+            and str(getattr(profile, "government_employee_group", "")).strip().lower()
+                in {"mts", "class iv", "group d"}
+        ):
+            continue
 
         if actual_value is None:
             is_eligible = False
@@ -623,10 +691,28 @@ def check_profile_eligibility(
                 is_eligible = False
                 reasons.append(rule["reason"])
 
+       # ------------------------------------------
+    # PM-JAY Route B final handling
+    # ------------------------------------------
+
+    if (
+        scheme_id == "PMJAY"
+        and profile.age < 70
+        and not pmjay_route_a_indicator
+    ):
+
+        connection.close()
+
+        return False, reasons, reasons
+
+
     connection.close()
 
+
     if is_eligible:
+
         return True, None, reasons
+
 
     return False, reasons, reasons
 
